@@ -99,8 +99,8 @@ def ejecutar_orden(senal, symbol, cantidad):
         return precio, cantidad
 
     except Exception as e:
-        print(f"❌ Error inesperado al ejecutar operación: {e}")
-        return None, None
+        print(f"❌ Error inesperado: {e}")
+        enviar_telegram(f"❌ Error inesperado: {e}")
 
 def registrar_operacion(fecha, tipo, precio_entrada, cantidad, tp, sl, resultado=None, pnl=None):
     archivo = 'registro_operaciones_spk.csv'
@@ -147,6 +147,9 @@ def notificar_pnl(symbol):
         return None
 
 # ============ LOOP PRINCIPAL ============
+ultima_posicion_cerrada = True
+datos_ultima_operacion = {}
+
 while True:
     df = obtener_datos(symbol, intervalo)
 
@@ -234,6 +237,14 @@ while True:
         precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
 
         if precio_entrada:
+            ultima_posicion_cerrada = False
+            datos_ultima_operacion = {
+                "senal": senal,
+                "precio_entrada": precio_entrada,
+                "cantidad_real": cantidad_real,
+                "tp": tp,
+                "sl": sl
+            }
             # Cancelar órdenes TP/SL abiertas antes de crear nuevas
             ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
             for orden in ordenes_abiertas:
@@ -282,19 +293,43 @@ while True:
             except Exception as e:
                 print(f"❌ Error al crear TP/SL: {e}")
 
-            registrar_operacion(
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                senal,
-                precio_entrada,
-                cantidad_real,
-                tp,
-                sl
-            )
-            notificar_pnl(symbol)
             print(f"✅ Orden {senal.upper()} ejecutada correctamente.")
             print(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
             enviar_telegram(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada}.\nTP: {tp} | SL: {sl}")
         else:
             print(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
+
+    if pos_abierta == 0 and not ultima_posicion_cerrada and datos_ultima_operacion:
+        trades = client.futures_account_trades(symbol=symbol)
+        if trades:
+            ultimo_trade = trades[-1]
+            pnl = float(ultimo_trade.get('realizedPnl', 0))
+            # Detecta si fue TP o SL
+            precio_ejecucion = float(ultimo_trade['price'])
+            tp = datos_ultima_operacion["tp"]
+            sl = datos_ultima_operacion["sl"]
+            if abs(precio_ejecucion - tp) < abs(precio_ejecucion - sl):
+                resultado = "TP"
+                enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+            else:
+                resultado = "SL"
+                enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+        else:
+            resultado = ""
+            pnl = None
+            enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
+
+        registrar_operacion(
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            datos_ultima_operacion["senal"],
+            datos_ultima_operacion["precio_entrada"],
+            datos_ultima_operacion["cantidad_real"],
+            datos_ultima_operacion["tp"],
+            datos_ultima_operacion["sl"],
+            resultado=resultado,
+            pnl=pnl
+        )
+        ultima_posicion_cerrada = True
+        datos_ultima_operacion = {}
 
     time.sleep(60)  # Esperar antes de la siguiente verificación
