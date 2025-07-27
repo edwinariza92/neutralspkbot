@@ -41,28 +41,32 @@ def obtener_datos(symbol, intervalo, limite=100):
     df['low'] = df['low'].astype(float)
     return df[['close', 'high', 'low']]
 
-def calcular_senal(df):
+def calcular_senal(df, umbral_volatilidad=0.02):
+    # Bandas de Bollinger y ATR
     df['ma'] = df['close'].rolling(window=20).mean()
     df['std'] = df['close'].rolling(window=20).std()
     df['upper'] = df['ma'] + 2 * df['std']
     df['lower'] = df['ma'] - 2 * df['std']
-    df['ma50'] = df['close'].rolling(window=50).mean()  # MA50 para filtro de tendencia
-
-    if len(df) < 51:
+    df['atr'] = df['close'].rolling(window=14).apply(lambda x: np.mean(np.abs(np.diff(x))), raw=True)
+    
+    if len(df) < 21:
         return 'neutral'
-    close_prev = df['close'].iloc[-2]
+    
     close_now = df['close'].iloc[-1]
-    upper_prev = df['upper'].iloc[-2]
+    close_prev = df['close'].iloc[-2]
     upper_now = df['upper'].iloc[-1]
-    lower_prev = df['lower'].iloc[-2]
+    upper_prev = df['upper'].iloc[-2]
     lower_now = df['lower'].iloc[-1]
-    ma50_now = df['ma50'].iloc[-1]
+    lower_prev = df['lower'].iloc[-2]
+    atr_now = df['atr'].iloc[-1]
+    
+    filtro_volatilidad = atr_now < umbral_volatilidad
 
-    # Señal long: cruce arriba banda superior y precio sobre MA50
-    if close_prev <= upper_prev and close_now > upper_now and close_now > ma50_now:
+    # Señal long: cruce arriba banda superior y filtro de volatilidad
+    if close_prev <= upper_prev and close_now > upper_now and filtro_volatilidad:
         return 'long'
-    # Señal short: cruce abajo banda inferior y precio bajo MA50
-    elif close_prev >= lower_prev and close_now < lower_now and close_now < ma50_now:
+    # Señal short: cruce abajo banda inferior y filtro de volatilidad
+    elif close_prev >= lower_prev and close_now < lower_now and filtro_volatilidad:
         return 'short'
     else:
         return 'neutral'
@@ -205,14 +209,17 @@ while True:
 
         # Calcula distancia SL en precio (ajustable)
         precio_actual = float(df['close'].iloc[-1])
+        # Calcula ATR para la última vela
+        atr = df['atr'].iloc[-1]
+
         if senal == 'long':
-            sl = precio_actual - atr * 1.2
+            sl = precio_actual - atr * 1.5
             tp = precio_actual + atr * 2
-            distancia_sl = atr * 1.2
+            distancia_sl = atr * 1.5
         else:
-            sl = precio_actual + atr * 1.2
+            sl = precio_actual + atr * 1.5
             tp = precio_actual - atr * 2
-            distancia_sl = atr * 1.2
+            distancia_sl = atr * 1.5
 
         # Redondeo de precios y cantidad según precisión del símbolo
         cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
