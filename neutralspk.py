@@ -12,7 +12,7 @@ import requests
 api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
 api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
 symbol = 'SPKUSDT'
-intervalo = '15m'
+intervalo = '30m'
 riesgo_pct = 0.03  # 3% de riesgo por operación
 umbral_volatilidad = 0.02  # ATR máximo permitido para operar
 # ===============================
@@ -149,6 +149,7 @@ def notificar_pnl(symbol):
 # ============ LOOP PRINCIPAL ============
 ultima_posicion_cerrada = True
 datos_ultima_operacion = {}
+hubo_posicion_abierta = False
 
 while True:
     df = obtener_datos(symbol, intervalo)
@@ -238,6 +239,7 @@ while True:
 
         if precio_entrada:
             ultima_posicion_cerrada = False
+            hubo_posicion_abierta = True
             datos_ultima_operacion = {
                 "senal": senal,
                 "precio_entrada": precio_entrada,
@@ -299,12 +301,13 @@ while True:
         else:
             print(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
 
-    if pos_abierta == 0 and not ultima_posicion_cerrada and datos_ultima_operacion:
+    if pos_abierta == 0 and not ultima_posicion_cerrada and datos_ultima_operacion and hubo_posicion_abierta:
+        # Espera unos segundos para que Binance registre el trade de cierre real
+        time.sleep(5)
         trades = client.futures_account_trades(symbol=symbol)
         if trades:
             ultimo_trade = trades[-1]
             pnl = float(ultimo_trade.get('realizedPnl', 0))
-            # Detecta si fue TP o SL
             precio_ejecucion = float(ultimo_trade['price'])
             tp = datos_ultima_operacion["tp"]
             sl = datos_ultima_operacion["sl"]
@@ -331,5 +334,6 @@ while True:
         )
         ultima_posicion_cerrada = True
         datos_ultima_operacion = {}
+        hubo_posicion_abierta = False
 
     time.sleep(60)  # Esperar antes de la siguiente verificación
