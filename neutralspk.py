@@ -7,6 +7,8 @@ from datetime import datetime
 import csv
 import os
 import requests
+import traceback
+import sys
 
 # ======== CONFIGURACIÓN ========
 api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
@@ -30,6 +32,39 @@ def enviar_telegram(mensaje):
         requests.post(url, data=data)
     except Exception as e:
         print(f"❌ Error enviando notificación Telegram: {e}")
+
+def enviar_error_telegram(error, contexto=""):
+    """Envía notificaciones de error a Telegram con detalles"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    mensaje = f"🚨 **ERROR EN BOT {symbol}** 🚨\n"
+    mensaje += f"⏰ **Hora:** {timestamp}\n"
+    mensaje += f"📊 **Símbolo:** {symbol}\n"
+    if contexto:
+        mensaje += f"📍 **Contexto:** {contexto}\n"
+    mensaje += f"❌ **Error:** {str(error)}\n"
+    mensaje += f"🔍 **Tipo:** {type(error).__name__}\n"
+    
+    # Obtener el traceback para más detalles
+    tb = traceback.format_exc()
+    if tb and tb != "NoneType: None\n":
+        # Limitar el traceback para que no sea muy largo
+        tb_lines = tb.split('\n')[:10]  # Primeras 10 líneas
+        mensaje += f"📋 **Detalles:**\n```\n{chr(10).join(tb_lines)}\n```"
+    
+    try:
+        enviar_telegram(mensaje)
+    except Exception as e:
+        print(f"❌ Error enviando notificación de error: {e}")
+
+def manejar_excepcion(func):
+    """Decorador para manejar excepciones y enviar notificaciones"""
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            enviar_error_telegram(e, f"Función: {func.__name__}")
+            raise
+    return wrapper
 
 def obtener_datos(symbol, intervalo, limite=100):
     klines = client.futures_klines(symbol=symbol, interval=intervalo, limit=limite)
@@ -156,228 +191,258 @@ datos_ultima_operacion = {}
 hubo_posicion_abierta = False
 tiempo_ultima_apertura = None
 
+# Notificar inicio del bot
+enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
+
 while True:
-    df = obtener_datos(symbol, intervalo)
+    try:
+        df = obtener_datos(symbol, intervalo)
 
-    if len(df) < 51:
-        print("⏳ Esperando más datos...")
-        time.sleep(60)
-        continue
-
-    senal = calcular_senal(df)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Señal detectada: {senal.upper()}")
-
-    info_pos = client.futures_position_information(symbol=symbol)
-    if not info_pos:
-        print("Sin posición abierta.")
-        pos_abierta = 0.0
-    else:
-        posicion = info_pos[0]
-        pos_abierta = float(posicion['positionAmt'])
-        if pos_abierta != 0:
-            print(f"Posición actual: cantidad={posicion['positionAmt']}, precio entrada={posicion['entryPrice']}, PnL={posicion['unRealizedProfit']}")
-        else:
-            print("Sin posición abierta.")
-
-    # Cancelar órdenes TP/SL pendientes si no hay posición abierta
-    if pos_abierta == 0:
-        ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
-        for orden in ordenes_abiertas:
-            if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                try:
-                    client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
-                    print(f"🗑️ Orden pendiente cancelada: {orden['type']}")
-                except Exception as e:
-                    print(f"❌ Error al cancelar orden pendiente: {e}")
-
-    # Evitar duplicar posiciones en la misma dirección
-    if (senal == 'long' and pos_abierta > 0) or (senal == 'short' and pos_abierta < 0):
-        print("⚠️ Ya hay una posición abierta en la misma dirección. No se ejecuta nueva orden.")
-        time.sleep(60)
-        continue
-
-    # === Gestión dinámica y avanzada ===
-    if senal in ['long', 'short'] and pos_abierta == 0:
-        atr = calcular_atr(df)
-        if atr > umbral_volatilidad:
-            print("Mercado demasiado volátil, no se opera.")
+        if len(df) < 51:
+            print("⏳ Esperando más datos...")
             time.sleep(60)
             continue
 
-        # Gestión de riesgo avanzada
-        balance = client.futures_account_balance()
-        saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
+        senal = calcular_senal(df)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Señal detectada: {senal.upper()}")
 
-        # Calcula distancia SL en precio (ajustable)
-        precio_actual = float(df['close'].iloc[-1])
-        # Calcula ATR para la última vela
-        atr = df['atr'].iloc[-1]
-
-        if senal == 'long':
-            sl = precio_actual - atr * 1.5
-            tp = precio_actual + atr * 2
-            distancia_sl = atr * 1.5
+        info_pos = client.futures_position_information(symbol=symbol)
+        if not info_pos:
+            print("Sin posición abierta.")
+            pos_abierta = 0.0
         else:
-            sl = precio_actual + atr * 1.5
-            tp = precio_actual - atr * 2
-            distancia_sl = atr * 1.5
+            posicion = info_pos[0]
+            pos_abierta = float(posicion['positionAmt'])
+            if pos_abierta != 0:
+                print(f"Posición actual: cantidad={posicion['positionAmt']}, precio entrada={posicion['entryPrice']}, PnL={posicion['unRealizedProfit']}")
+            else:
+                print("Sin posición abierta.")
 
-        # Redondeo de precios y cantidad según precisión del símbolo
-        cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
-        cantidad = calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl)
-        cantidad = round(cantidad, cantidad_decimales)
-        sl = round(sl, precio_decimales)
-        tp = round(tp, precio_decimales)
-
-        # Ajuste para cumplir el mínimo notional de Binance
-        notional = precio_actual * cantidad
-        if notional < 5:
-            cantidad_minima = round(5 / precio_actual, cantidad_decimales)
-            print(f"⚠️ Ajustando cantidad al mínimo permitido: {cantidad_minima} contratos ({5:.2f} USDT)")
-            cantidad = cantidad_minima
-            notional = precio_actual * cantidad
-
-        if notional < 5:
-            print(f"⚠️ Orden rechazada: el valor notional ({notional:.2f} USDT) sigue siendo menor al mínimo permitido por Binance (5 USDT).")
-            continue
-
-        print(f"💰 Saldo disponible: {saldo_usdt} USDT | Usando {cantidad} contratos para la operación ({riesgo_pct*100:.1f}% de riesgo, SL={sl:.4f}, TP={tp:.4f})")
-
-        precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
-
-        if precio_entrada:
-            ultima_posicion_cerrada = False
-            hubo_posicion_abierta = True
-            tiempo_ultima_apertura = time.time()
-            datos_ultima_operacion = {
-                "senal": senal,
-                "precio_entrada": precio_entrada,
-                "cantidad_real": cantidad_real,
-                "tp": tp,
-                "sl": sl
-            }
-            # Cancelar órdenes TP/SL abiertas antes de crear nuevas
+        # Cancelar órdenes TP/SL pendientes si no hay posición abierta
+        if pos_abierta == 0:
             ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
             for orden in ordenes_abiertas:
                 if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
                     try:
                         client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                        print(f"🗑️ Orden pendiente cancelada: {orden['type']}")
                     except Exception as e:
-                        print(f"❌ Error al cancelar orden previa: {e}")
+                        print(f"❌ Error al cancelar orden pendiente: {e}")
+                        enviar_error_telegram(e, "Cancelar orden pendiente")
 
-            # Crear TP/SL según la dirección de la señal
-            try:
-                if senal == 'long':
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side='SELL',
-                        type='TAKE_PROFIT_MARKET',
-                        stopPrice=tp,
-                        quantity=cantidad_real,
-                        reduceOnly=True
-                    )
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side='SELL',
-                        type='STOP_MARKET',
-                        stopPrice=sl,
-                        quantity=cantidad_real,
-                        reduceOnly=True
-                    )
-                else:
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side='BUY',
-                        type='TAKE_PROFIT_MARKET',
-                        stopPrice=tp,
-                        quantity=cantidad_real,
-                        reduceOnly=True
-                    )
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side='BUY',
-                        type='STOP_MARKET',
-                        stopPrice=sl,
-                        quantity=cantidad_real,
-                        reduceOnly=True
-                    )
-            except Exception as e:
-                print(f"❌ Error al crear TP/SL: {e}")
+        # Evitar duplicar posiciones en la misma dirección
+        if (senal == 'long' and pos_abierta > 0) or (senal == 'short' and pos_abierta < 0):
+            print("⚠️ Ya hay una posición abierta en la misma dirección. No se ejecuta nueva orden.")
+            time.sleep(60)
+            continue
 
-            print(f"✅ Orden {senal.upper()} ejecutada correctamente.")
-            print(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
-            enviar_telegram(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada}.\nTP: {tp} | SL: {sl}")
-        else:
-            print(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
+        # === Gestión dinámica y avanzada ===
+        if senal in ['long', 'short'] and pos_abierta == 0:
+            atr = calcular_atr(df)
+            if atr > umbral_volatilidad:
+                print("Mercado demasiado volátil, no se opera.")
+                time.sleep(60)
+                continue
 
-    # Verificar cierre de posición solo si ha pasado suficiente tiempo desde la apertura
-    tiempo_actual = time.time()
-    if (pos_abierta == 0 and 
-        not ultima_posicion_cerrada and 
-        datos_ultima_operacion and 
-        hubo_posicion_abierta and
-        tiempo_ultima_apertura and
-        (tiempo_actual - tiempo_ultima_apertura) > 10):  # Esperar al menos 10 segundos
-        
-        # Espera unos segundos para que Binance registre el trade de cierre real
-        time.sleep(5)
-        trades = client.futures_account_trades(symbol=symbol)
-        if trades:
-            ultimo_trade = trades[-1]
-            pnl = float(ultimo_trade.get('realizedPnl', 0))
-            precio_ejecucion = float(ultimo_trade['price'])
-            tp = datos_ultima_operacion["tp"]
-            sl = datos_ultima_operacion["sl"]
-            senal_original = datos_ultima_operacion["senal"]
+            # Gestión de riesgo avanzada
+            balance = client.futures_account_balance()
+            saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
+
+            # Calcula distancia SL en precio (ajustable)
+            precio_actual = float(df['close'].iloc[-1])
+            # Calcula ATR para la última vela
+            atr = df['atr'].iloc[-1]
+
+            if senal == 'long':
+                sl = precio_actual - atr * 1.5
+                tp = precio_actual + atr * 2
+                distancia_sl = atr * 1.5
+            else:
+                sl = precio_actual + atr * 1.5
+                tp = precio_actual - atr * 2
+                distancia_sl = atr * 1.5
+
+            # Redondeo de precios y cantidad según precisión del símbolo
+            cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
+            cantidad = calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl)
+            cantidad = round(cantidad, cantidad_decimales)
+            sl = round(sl, precio_decimales)
+            tp = round(tp, precio_decimales)
+
+            # Ajuste para cumplir el mínimo notional de Binance
+            notional = precio_actual * cantidad
+            if notional < 5:
+                cantidad_minima = round(5 / precio_actual, cantidad_decimales)
+                print(f"⚠️ Ajustando cantidad al mínimo permitido: {cantidad_minima} contratos ({5:.2f} USDT)")
+                cantidad = cantidad_minima
+                notional = precio_actual * cantidad
+
+            if notional < 5:
+                print(f"⚠️ Orden rechazada: el valor notional ({notional:.2f} USDT) sigue siendo menor al mínimo permitido por Binance (5 USDT).")
+                continue
+
+            print(f"💰 Saldo disponible: {saldo_usdt} USDT | Usando {cantidad} contratos para la operación ({riesgo_pct*100:.1f}% de riesgo, SL={sl:.4f}, TP={tp:.4f})")
+
+            precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
+
+            if precio_entrada:
+                ultima_posicion_cerrada = False
+                hubo_posicion_abierta = True
+                tiempo_ultima_apertura = time.time()
+                datos_ultima_operacion = {
+                    "senal": senal,
+                    "precio_entrada": precio_entrada,
+                    "cantidad_real": cantidad_real,
+                    "tp": tp,
+                    "sl": sl
+                }
+                # Cancelar órdenes TP/SL abiertas antes de crear nuevas
+                ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
+                for orden in ordenes_abiertas:
+                    if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                        try:
+                            client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                        except Exception as e:
+                            print(f"❌ Error al cancelar orden previa: {e}")
+                            enviar_error_telegram(e, "Cancelar orden previa")
+
+                # Crear TP/SL según la dirección de la señal
+                try:
+                    if senal == 'long':
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side='SELL',
+                            type='TAKE_PROFIT_MARKET',
+                            stopPrice=tp,
+                            quantity=cantidad_real,
+                            reduceOnly=True
+                        )
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side='SELL',
+                            type='STOP_MARKET',
+                            stopPrice=sl,
+                            quantity=cantidad_real,
+                            reduceOnly=True
+                        )
+                    else:
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side='BUY',
+                            type='TAKE_PROFIT_MARKET',
+                            stopPrice=tp,
+                            quantity=cantidad_real,
+                            reduceOnly=True
+                        )
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side='BUY',
+                            type='STOP_MARKET',
+                            stopPrice=sl,
+                            quantity=cantidad_real,
+                            reduceOnly=True
+                        )
+                except Exception as e:
+                    print(f"❌ Error al crear TP/SL: {e}")
+                    enviar_error_telegram(e, "Crear TP/SL")
+
+                print(f"✅ Orden {senal.upper()} ejecutada correctamente.")
+                print(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
+                enviar_telegram(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada}.\nTP: {tp} | SL: {sl}")
+            else:
+                print(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
+
+        # Verificar cierre de posición solo si ha pasado suficiente tiempo desde la apertura
+        tiempo_actual = time.time()
+        if (pos_abierta == 0 and 
+            not ultima_posicion_cerrada and 
+            datos_ultima_operacion and 
+            hubo_posicion_abierta and
+            tiempo_ultima_apertura and
+            (tiempo_actual - tiempo_ultima_apertura) > 10):  # Esperar al menos 10 segundos
             
-            # Verificar que el trade realmente corresponde a la posición que abrimos
-            trade_time = int(ultimo_trade['time']) / 1000  # Convertir a segundos
-            if trade_time > tiempo_ultima_apertura:
-                # Lógica mejorada para determinar TP vs SL
-                # Para LONG: TP > precio_entrada, SL < precio_entrada
-                # Para SHORT: TP < precio_entrada, SL > precio_entrada
-                precio_entrada = datos_ultima_operacion["precio_entrada"]
+            # Espera unos segundos para que Binance registre el trade de cierre real
+            time.sleep(5)
+            trades = client.futures_account_trades(symbol=symbol)
+            if trades:
+                ultimo_trade = trades[-1]
+                pnl = float(ultimo_trade.get('realizedPnl', 0))
+                precio_ejecucion = float(ultimo_trade['price'])
+                tp = datos_ultima_operacion["tp"]
+                sl = datos_ultima_operacion["sl"]
+                senal_original = datos_ultima_operacion["senal"]
                 
-                if senal_original == 'long':
-                    # En posición LONG, si el precio de ejecución es mayor al precio de entrada, probablemente fue TP
-                    if precio_ejecucion > precio_entrada:
-                        resultado = "TP"
-                        enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
-                    else:
-                        resultado = "SL"
-                        enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
-                else:  # senal_original == 'short'
-                    # En posición SHORT, si el precio de ejecución es menor al precio de entrada, probablemente fue TP
-                    if precio_ejecucion < precio_entrada:
-                        resultado = "TP"
-                        enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
-                    else:
-                        resultado = "SL"
-                        enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
-                
-                print(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}")
+                # Verificar que el trade realmente corresponde a la posición que abrimos
+                trade_time = int(ultimo_trade['time']) / 1000  # Convertir a segundos
+                if trade_time > tiempo_ultima_apertura:
+                    # Lógica mejorada para determinar TP vs SL
+                    # Para LONG: TP > precio_entrada, SL < precio_entrada
+                    # Para SHORT: TP < precio_entrada, SL > precio_entrada
+                    precio_entrada = datos_ultima_operacion["precio_entrada"]
+                    
+                    if senal_original == 'long':
+                        # En posición LONG, si el precio de ejecución es mayor al precio de entrada, probablemente fue TP
+                        if precio_ejecucion > precio_entrada:
+                            resultado = "TP"
+                            enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                        else:
+                            resultado = "SL"
+                            enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                    else:  # senal_original == 'short'
+                        # En posición SHORT, si el precio de ejecución es menor al precio de entrada, probablemente fue TP
+                        if precio_ejecucion < precio_entrada:
+                            resultado = "TP"
+                            enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                        else:
+                            resultado = "SL"
+                            enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                    
+                    print(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}")
+                else:
+                    resultado = ""
+                    pnl = None
+                    print("⚠️ Trade detectado no corresponde a la posición actual")
             else:
                 resultado = ""
                 pnl = None
-                print("⚠️ Trade detectado no corresponde a la posición actual")
-        else:
-            resultado = ""
-            pnl = None
-            enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
+                enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
 
-        registrar_operacion(
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            datos_ultima_operacion["senal"],
-            datos_ultima_operacion["precio_entrada"],
-            datos_ultima_operacion["cantidad_real"],
-            datos_ultima_operacion["tp"],
-            datos_ultima_operacion["sl"],
-            resultado=resultado,
-            pnl=pnl
-        )
-        ultima_posicion_cerrada = True
-        datos_ultima_operacion = {}
-        hubo_posicion_abierta = False
-        tiempo_ultima_apertura = None
+            registrar_operacion(
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                datos_ultima_operacion["senal"],
+                datos_ultima_operacion["precio_entrada"],
+                datos_ultima_operacion["cantidad_real"],
+                datos_ultima_operacion["tp"],
+                datos_ultima_operacion["sl"],
+                resultado=resultado,
+                pnl=pnl
+            )
+            ultima_posicion_cerrada = True
+            datos_ultima_operacion = {}
+            hubo_posicion_abierta = False
+            tiempo_ultima_apertura = None
 
-    time.sleep(60)  # Esperar antes de la siguiente verificación
+        time.sleep(60)  # Esperar antes de la siguiente verificación
+        
+    except KeyboardInterrupt:
+        print("\n🛑 Bot detenido por el usuario")
+        enviar_telegram(f"🛑 **Bot {symbol} detenido manualmente**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        break
+    except Exception as e:
+        error_msg = f"🚨 **ERROR CRÍTICO EN BOT {symbol}** 🚨\n"
+        error_msg += f"⏰ **Hora:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        error_msg += f"❌ **Error:** {str(e)}\n"
+        error_msg += f"🔍 **Tipo:** {type(e).__name__}\n"
+        error_msg += f"📋 **Traceback:**\n```\n{traceback.format_exc()[:500]}...\n```"
+        
+        print(f"❌ Error crítico: {e}")
+        print(traceback.format_exc())
+        
+        try:
+            enviar_telegram(error_msg)
+        except Exception as telegram_error:
+            print(f"❌ Error enviando notificación de error crítico: {telegram_error}")
+        
+        print("🔄 Reintentando en 60 segundos...")
+        time.sleep(60)
+        continue
