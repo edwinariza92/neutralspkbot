@@ -82,7 +82,14 @@ def calcular_senal(df, umbral_volatilidad=0.02):
     df['std'] = df['close'].rolling(window=20).std()
     df['upper'] = df['ma'] + 2 * df['std']
     df['lower'] = df['ma'] - 2 * df['std']
-    df['atr'] = df['close'].rolling(window=14).apply(lambda x: np.mean(np.abs(np.diff(x))), raw=True)
+    
+    # ATR usando la fórmula estándar (True Range)
+    df['prev_close'] = df['close'].shift(1)
+    df['tr1'] = df['high'] - df['low']
+    df['tr2'] = abs(df['high'] - df['prev_close'])
+    df['tr3'] = abs(df['low'] - df['prev_close'])
+    df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+    df['atr'] = df['tr'].rolling(window=14).mean()
     
     if len(df) < 21:
         return 'neutral'
@@ -166,11 +173,19 @@ def obtener_precisiones(symbol):
     return cantidad_decimales, precio_decimales
 
 def calcular_atr(df, periodo=14):
+    """Calcula el ATR usando la fórmula estándar (True Range)"""
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
     df['close'] = df['close'].astype(float)
-    df['tr'] = df[['high', 'low', 'close']].apply(
-        lambda row: max(row['high'] - row['low'], abs(row['high'] - row['close']), abs(row['low'] - row['close'])), axis=1)
+    
+    # True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
+    df['prev_close'] = df['close'].shift(1)
+    df['tr1'] = df['high'] - df['low']
+    df['tr2'] = abs(df['high'] - df['prev_close'])
+    df['tr3'] = abs(df['low'] - df['prev_close'])
+    df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+    
+    # ATR = Media móvil del True Range
     df['atr'] = df['tr'].rolling(window=periodo).mean()
     return df['atr'].iloc[-1]
 
@@ -255,11 +270,11 @@ while True:
 
             if senal == 'long':
                 sl = precio_actual - atr * 1.5
-                tp = precio_actual + atr * 2
+                tp = precio_actual + atr * 2.5
                 distancia_sl = atr * 1.5
             else:
                 sl = precio_actual + atr * 1.5
-                tp = precio_actual - atr * 2
+                tp = precio_actual - atr * 2.5
                 distancia_sl = atr * 1.5
 
             # Redondeo de precios y cantidad según precisión del símbolo
