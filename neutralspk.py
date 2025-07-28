@@ -154,6 +154,7 @@ def notificar_pnl(symbol):
 ultima_posicion_cerrada = True
 datos_ultima_operacion = {}
 hubo_posicion_abierta = False
+tiempo_ultima_apertura = None
 
 while True:
     df = obtener_datos(symbol, intervalo)
@@ -247,6 +248,7 @@ while True:
         if precio_entrada:
             ultima_posicion_cerrada = False
             hubo_posicion_abierta = True
+            tiempo_ultima_apertura = time.time()
             datos_ultima_operacion = {
                 "senal": senal,
                 "precio_entrada": precio_entrada,
@@ -308,7 +310,15 @@ while True:
         else:
             print(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
 
-    if pos_abierta == 0 and not ultima_posicion_cerrada and datos_ultima_operacion and hubo_posicion_abierta:
+    # Verificar cierre de posición solo si ha pasado suficiente tiempo desde la apertura
+    tiempo_actual = time.time()
+    if (pos_abierta == 0 and 
+        not ultima_posicion_cerrada and 
+        datos_ultima_operacion and 
+        hubo_posicion_abierta and
+        tiempo_ultima_apertura and
+        (tiempo_actual - tiempo_ultima_apertura) > 10):  # Esperar al menos 10 segundos
+        
         # Espera unos segundos para que Binance registre el trade de cierre real
         time.sleep(5)
         trades = client.futures_account_trades(symbol=symbol)
@@ -318,12 +328,38 @@ while True:
             precio_ejecucion = float(ultimo_trade['price'])
             tp = datos_ultima_operacion["tp"]
             sl = datos_ultima_operacion["sl"]
-            if abs(precio_ejecucion - tp) < abs(precio_ejecucion - sl):
-                resultado = "TP"
-                enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+            senal_original = datos_ultima_operacion["senal"]
+            
+            # Verificar que el trade realmente corresponde a la posición que abrimos
+            trade_time = int(ultimo_trade['time']) / 1000  # Convertir a segundos
+            if trade_time > tiempo_ultima_apertura:
+                # Lógica mejorada para determinar TP vs SL
+                # Para LONG: TP > precio_entrada, SL < precio_entrada
+                # Para SHORT: TP < precio_entrada, SL > precio_entrada
+                precio_entrada = datos_ultima_operacion["precio_entrada"]
+                
+                if senal_original == 'long':
+                    # En posición LONG, si el precio de ejecución es mayor al precio de entrada, probablemente fue TP
+                    if precio_ejecucion > precio_entrada:
+                        resultado = "TP"
+                        enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                    else:
+                        resultado = "SL"
+                        enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                else:  # senal_original == 'short'
+                    # En posición SHORT, si el precio de ejecución es menor al precio de entrada, probablemente fue TP
+                    if precio_ejecucion < precio_entrada:
+                        resultado = "TP"
+                        enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                    else:
+                        resultado = "SL"
+                        enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                
+                print(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}")
             else:
-                resultado = "SL"
-                enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                resultado = ""
+                pnl = None
+                print("⚠️ Trade detectado no corresponde a la posición actual")
         else:
             resultado = ""
             pnl = None
@@ -342,5 +378,6 @@ while True:
         ultima_posicion_cerrada = True
         datos_ultima_operacion = {}
         hubo_posicion_abierta = False
+        tiempo_ultima_apertura = None
 
     time.sleep(60)  # Esperar antes de la siguiente verificación
