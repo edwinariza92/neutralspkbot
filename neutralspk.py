@@ -182,6 +182,33 @@ def procesar_comando_telegram(comando):
         except Exception as e:
             return f"❌ Error al actualizar: {e}"
 
+    elif comando.startswith("registro"):
+        partes = comando.split()
+        num = 5
+        if len(partes) > 1 and partes[1].isdigit():
+            num = int(partes[1])
+        return obtener_resumen_operaciones(num)
+
+    elif comando == "analisis":
+        return analizar_operaciones()
+
+    elif comando == "descargar_registro":
+        archivo = 'registro_operaciones.csv'
+        if not os.path.exists(archivo):
+            return "❌ No hay registro de operaciones aún."
+        enviar_archivo_telegram(archivo)
+        return "📄 Registro enviado por Telegram."
+
+    elif comando == "eliminar_registro":
+        archivo = 'registro_operaciones.csv'
+        if not os.path.exists(archivo):
+            return "❌ No hay registro de operaciones para eliminar."
+        try:
+            os.remove(archivo)
+            return "🗑️ Registro de operaciones eliminado correctamente."
+        except Exception as e:
+            return f"❌ Error al eliminar el registro: {e}"
+
     else:
         return """🤖 **Comandos disponibles:**
 
@@ -404,6 +431,7 @@ def ejecutar_bot_trading():
     datos_ultima_operacion = {}
     hubo_posicion_abierta = False
     tiempo_ultima_apertura = None
+    perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
 
     # Notificar inicio del bot
     enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
@@ -476,6 +504,17 @@ def ejecutar_bot_trading():
                     pnl = None
                     enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
 
+                if resultado == "SL":
+                    perdidas_consecutivas += 1
+                else:
+                    perdidas_consecutivas = 0
+
+                if perdidas_consecutivas >= 3:
+                    enviar_telegram("⚠️ Bot SPKUSDT detenido tras 3 pérdidas consecutivas. Revisión sugerida")
+                    log_consola("⚠️ Bot detenido tras 3 pérdidas consecutivas.")
+                    bot_activo = False
+                    break
+
                 registrar_operacion(
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     datos_ultima_operacion["senal"],
@@ -528,13 +567,13 @@ def ejecutar_bot_trading():
                 atr = df['atr'].iloc[-1]
 
                 if senal == 'long':
-                    sl = precio_actual - atr * 1.5
-                    tp = precio_actual + atr * 2.5
-                    distancia_sl = atr * 1.5
+                    sl = precio_actual - atr * sl_multiplier
+                    tp = precio_actual + atr * tp_multiplier
+                    distancia_sl = atr * sl_multiplier
                 else:
-                    sl = precio_actual + atr * 1.5
-                    tp = precio_actual - atr * 2.5
-                    distancia_sl = atr * 1.5
+                    sl = precio_actual + atr * sl_multiplier
+                    tp = precio_actual - atr * tp_multiplier
+                    distancia_sl = atr * sl_multiplier
 
                 cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
                 cantidad = calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl)
@@ -647,6 +686,64 @@ def ejecutar_bot_trading():
 
     enviar_telegram(f"🛑 **Bot {symbol} detenido**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_consola("Bot de trading detenido")
+
+def enviar_archivo_telegram(ruta_archivo, nombre_archivo=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    if not os.path.exists(ruta_archivo):
+        enviar_telegram("❌ El archivo no existe.")
+        return
+    with open(ruta_archivo, "rb") as f:
+        files = {"document": (nombre_archivo or os.path.basename(ruta_archivo), f)}
+        data = {"chat_id": TELEGRAM_CHAT_ID}
+        try:
+            response = requests.post(url, data=data, files=files)
+            if response.status_code == 200:
+                log_consola("✅ Registro enviado por Telegram.")
+            else:
+                log_consola(f"❌ Error enviando archivo: {response.text}")
+        except Exception as e:
+            log_consola(f"❌ Error enviando archivo por Telegram: {e}")
+
+def obtener_resumen_operaciones(num=5):
+    archivo = 'registro_operaciones.csv'
+    if not os.path.exists(archivo):
+        return "❌ No hay registro de operaciones aún."
+    try:
+        df = pd.read_csv(archivo)
+        if df.empty:
+            return "❌ El registro de operaciones está vacío."
+        ultimas = df.tail(num)
+        resumen = "📋 **Últimas operaciones:**\n"
+        for _, row in ultimas.iterrows():
+            resumen += (f"{row['Fecha']} | {row['Símbolo']} | {row['Tipo']} | Entrada: {row['Precio Entrada']} | "
+                        f"TP: {row['Take Profit']} | SL: {row['Stop Loss']} | "
+                        f"Resultado: {row['Resultado']} | PnL: {row['PnL']}\n")
+        return resumen
+    except Exception as e:
+        return f"❌ Error leyendo el registro: {e}"
+
+def analizar_operaciones():
+    archivo = 'registro_operaciones.csv'
+    if not os.path.exists(archivo):
+        return "❌ No hay registro de operaciones aún."
+    try:
+        df = pd.read_csv(archivo)
+        if df.empty:
+            return "❌ El registro de operaciones está vacío."
+        total = len(df)
+        ganadoras = df['Resultado'].str.upper().eq('TP').sum()
+        perdedoras = df['Resultado'].str.upper().eq('SL').sum()
+        pnl_total = pd.to_numeric(df['PnL'], errors='coerce').sum()
+        resumen = (
+            f"📊 **Análisis de Operaciones:**\n"
+            f"• Total: {total}\n"
+            f"• Ganadoras (TP): {ganadoras}\n"
+            f"• Perdedoras (SL): {perdedoras}\n"
+            f"• PnL total: {pnl_total:.4f} USDT"
+        )
+        return resumen
+    except Exception as e:
+        return f"❌ Error analizando el registro: {e}"
 
 # ============ INICIO DEL PROGRAMA ============
 if __name__ == "__main__":
