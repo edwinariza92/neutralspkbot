@@ -18,14 +18,14 @@ api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
 api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
 symbol = 'SPKUSDT'
 intervalo = '30m'
-riesgo_pct = 0.03  # 3% de riesgo por operación
+riesgo_pct = 0.01  # 1% de riesgo por operación
 umbral_volatilidad = 0.02  # ATR máximo permitido para operar
 bb_length = 20  # Periodo por defecto para Bandas de Bollinger
 bb_mult = 2.0  # Multiplicador por defecto para Bandas de Bollinger
-atr_length = 14  # Periodo por defecto para ATR
+atr_length = 16  # Periodo por defecto para ATR
 ma_trend_length = 50  # Periodo por defecto para MA de tendencia
-tp_multiplier = 2.5  # Multiplicador por defecto para Take Profit
-sl_multiplier = 1.5  # Multiplicador por defecto para Stop Loss
+tp_multiplier = 4.1  # Multiplicador por defecto para Take Profit
+sl_multiplier = 1.8  # Multiplicador por defecto para Stop Loss
 # ===============================
 
 client = Client(api_key, api_secret)
@@ -189,7 +189,7 @@ def procesar_comando_telegram(comando):
             num = int(partes[1])
         return obtener_resumen_operaciones(num)
 
-    elif comando == "analisis":
+    elif comando == "analizar":
         return analizar_operaciones()
 
     elif comando == "descargar_registro":
@@ -219,6 +219,11 @@ def procesar_comando_telegram(comando):
 • `configurar` - Muestra y permite cambiar la configuración
 • `set parametro valor` - Cambia un parámetro de configuración
     Ejemplo: `set simbolo BTCUSDT`
+• `registro` - Muestra las últimas 5 operaciones
+• `registro 10` - Muestra las últimas 10 operaciones
+• `analizar` - Muestra un resumen de resultados del registro
+• `descargar_registro` - Descarga el registro de operaciones (CSV)
+• `eliminar_registro` - Elimina el registro de operaciones
 """
 
 def bot_telegram_control():
@@ -510,8 +515,8 @@ def ejecutar_bot_trading():
                     perdidas_consecutivas = 0
 
                 if perdidas_consecutivas >= 3:
-                    enviar_telegram("⚠️ Bot SPKUSDT detenido tras 3 pérdidas consecutivas. Revisión sugerida")
-                    log_consola("⚠️ Bot detenido tras 3 pérdidas consecutivas.")
+                    enviar_telegram(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas. Revisión sugerida")
+                    log_consola(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas.")
                     bot_activo = False
                     break
 
