@@ -300,8 +300,10 @@ def procesar_comando_telegram(comando):
 """
 
 def bot_telegram_control():
-    """Bot de Telegram para controlar el bot de trading"""
+    """Bot de Telegram para controlar el bot de trading con mejor manejo de errores"""
     offset = 0
+    errores_consecutivos = 0
+    max_errores_consecutivos = 5
     
     while True:
         try:
@@ -309,9 +311,10 @@ def bot_telegram_control():
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
             params = {"offset": offset, "timeout": 30}
             
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, timeout=35)
             if response.status_code == 200:
                 data = response.json()
+                errores_consecutivos = 0  # Resetear contador de errores
                 
                 if data.get("ok") and data.get("result"):
                     for update in data["result"]:
@@ -323,13 +326,35 @@ def bot_telegram_control():
                             
                             # Solo procesar mensajes del chat autorizado
                             if str(chat_id) == TELEGRAM_CHAT_ID:
-                                respuesta = procesar_comando_telegram(texto)
-                                enviar_telegram(respuesta)
+                                try:
+                                    respuesta = procesar_comando_telegram(texto)
+                                    enviar_telegram(respuesta)
+                                except Exception as e:
+                                    log_consola(f"❌ Error procesando comando Telegram: {e}")
+                                    enviar_telegram(f"❌ Error procesando comando: {str(e)}")
             
             time.sleep(1)  # Pequeña pausa para no sobrecargar la API
             
+        except requests.exceptions.Timeout:
+            log_consola("⏰ Timeout en petición a Telegram API")
+            time.sleep(5)
+        except requests.exceptions.ConnectionError as e:
+            errores_consecutivos += 1
+            log_consola(f"🌐 Error de conexión Telegram ({errores_consecutivos}/{max_errores_consecutivos}): {e}")
+            if errores_consecutivos >= max_errores_consecutivos:
+                log_consola("🚨 Demasiados errores de conexión consecutivos. Reiniciando en 30 segundos...")
+                enviar_telegram("🚨 Problemas de conexión con Telegram. Reiniciando bot...")
+                time.sleep(30)
+                # Forzar reinicio del programa
+                os._exit(1)
+            time.sleep(10)
         except Exception as e:
-            log_consola(f"❌ Error en bot de Telegram: {e}")
+            errores_consecutivos += 1
+            log_consola(f"❌ Error en bot de Telegram ({errores_consecutivos}/{max_errores_consecutivos}): {e}")
+            if errores_consecutivos >= max_errores_consecutivos:
+                log_consola("🚨 Demasiados errores consecutivos. Reiniciando...")
+                time.sleep(30)
+                os._exit(1)
             time.sleep(5)
 
 def enviar_error_telegram(error, contexto=""):
@@ -1128,5 +1153,19 @@ if __name__ == "__main__":
     print("   • 'estado' - Muestra el estado actual")
     print(f"   • 'mafilter' - Filtro MA tendencia: {'ON' if usar_ma_trend else 'OFF'} (usa: set mafilter on/off)")
     
-    # Iniciar el bot de control de Telegram
-    bot_telegram_control()
+    # Iniciar el bot de control de Telegram en un thread separado
+    telegram_thread = threading.Thread(target=bot_telegram_control, daemon=True)
+    telegram_thread.start()
+    
+    # Mantener el programa principal vivo
+    try:
+        while True:
+            time.sleep(60)  # Verificar cada minuto si los threads están vivos
+            if not telegram_thread.is_alive():
+                log_consola("🚨 Thread de Telegram murió. Reiniciando...")
+                telegram_thread = threading.Thread(target=bot_telegram_control, daemon=True)
+                telegram_thread.start()
+    except KeyboardInterrupt:
+        log_consola("🛑 Programa detenido por usuario")
+        bot_activo = False
+        time.sleep(2)  # Dar tiempo a que el thread termine
